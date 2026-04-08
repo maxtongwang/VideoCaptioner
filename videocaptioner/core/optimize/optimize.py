@@ -167,6 +167,14 @@ class SubtitleOptimizer:
         try:
             result = self.agent_loop(subtitle_chunk)
 
+            # Apply learned corrections as post-processing
+            try:
+                from ..learning import get_learning_engine
+                engine = get_learning_engine()
+                result = {k: engine.post_process(v) for k, v in result.items()}
+            except Exception:
+                pass  # Learning engine is optional
+
             if self.update_callback:
                 callback_data = [
                     SubtitleProcessData(
@@ -208,6 +216,15 @@ class SubtitleOptimizer:
             user_prompt += (
                 f"\nReference content:\n<reference>{self.custom_prompt}</reference>"
             )
+
+        # Inject learned corrections from editing history
+        try:
+            from ..learning import get_learning_engine
+            correction_context = get_learning_engine().get_prompt_context(source="llm_optimize")
+            if correction_context:
+                user_prompt += f"\n{correction_context}"
+        except Exception:
+            pass  # Learning engine is optional
 
         messages = [
             {"role": "system", "content": get_prompt("optimize/subtitle")},
