@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
+import copy
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -94,13 +96,13 @@ class SubtitleTableModel(QAbstractTableModel):
                 return (
                     QTime(0, 0)
                     .addMSecs(segment["start_time"])
-                    .toString("hh:mm:ss.zzz")[:-2]
+                    .toString("hh:mm:ss.zzz")[:-1]
                 )
             elif col == 1:
                 return (
                     QTime(0, 0)
                     .addMSecs(segment["end_time"])
-                    .toString("hh:mm:ss.zzz")[:-2]
+                    .toString("hh:mm:ss.zzz")[:-1]
                 )
             elif col == 2:
                 return segment["original_subtitle"]
@@ -123,7 +125,21 @@ class SubtitleTableModel(QAbstractTableModel):
             if not segment:
                 return False
 
-            if col == 2:
+            if col == 0:
+                ms = self._parse_timestamp_to_ms(value)
+                if ms is None:
+                    return False
+                if ms >= segment["end_time"]:
+                    return False
+                segment["start_time"] = ms
+            elif col == 1:
+                ms = self._parse_timestamp_to_ms(value)
+                if ms is None:
+                    return False
+                if ms <= segment["start_time"]:
+                    return False
+                segment["end_time"] = ms
+            elif col == 2:
                 old_value = segment["original_subtitle"]
                 segment["original_subtitle"] = value
                 if old_value != value and old_value.strip():
@@ -185,9 +201,23 @@ class SubtitleTableModel(QAbstractTableModel):
     def flags(self, index: QModelIndex) -> Qt.ItemFlags:
         if not index.isValid():
             return Qt.NoItemFlags  # type: ignore
-        if index.column() in [2, 3]:
+        if index.column() in [0, 1, 2, 3]:
             return Qt.ItemIsEditable | Qt.ItemIsEnabled | Qt.ItemIsSelectable  # type: ignore
         return Qt.ItemIsEnabled | Qt.ItemIsSelectable  # type: ignore
+
+    @staticmethod
+    def _parse_timestamp_to_ms(text: str) -> Optional[int]:
+        """Parse hh:mm:ss.zz timestamp string to milliseconds."""
+        match = re.match(r"^\d{2}:\d{2}:\d{2}\.\d{2}$", text)
+        if not match:
+            return None
+        parts = text.split(":")
+        h = int(parts[0])
+        m = int(parts[1])
+        s_parts = parts[2].split(".")
+        s = int(s_parts[0])
+        zz = int(s_parts[1])
+        return h * 3600000 + m * 60000 + s * 1000 + zz * 10
 
     def update_data(self, new_data: Dict[str, str]) -> None:
         """更新字幕数据"""
