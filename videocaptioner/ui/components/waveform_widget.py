@@ -98,6 +98,8 @@ class WaveformTimelineWidget(QWidget):
         self._drag_start_x: float = 0.0
         self._drag_orig_start_ms: int = 0
         self._drag_orig_end_ms: int = 0
+        self._drag_visual_start_ms: int = 0  # 拖拽时的视觉状态，不修改实际数据
+        self._drag_visual_end_ms: int = 0
 
     # ── 公共方法 ──
 
@@ -321,8 +323,13 @@ class WaveformTimelineWidget(QWidget):
         painter.setFont(font)
 
         for i, (key, seg) in enumerate(self._subtitle_data.items()):
-            start_ms = seg.get("start_time", 0)
-            end_ms = seg.get("end_time", 0)
+            # 拖拽中使用视觉状态，不读取实际数据
+            if self._drag_mode and i == self._drag_index:
+                start_ms = self._drag_visual_start_ms
+                end_ms = self._drag_visual_end_ms
+            else:
+                start_ms = seg.get("start_time", 0)
+                end_ms = seg.get("end_time", 0)
 
             x1 = self.ms_to_x(start_ms)
             x2 = self.ms_to_x(end_ms)
@@ -465,6 +472,8 @@ class WaveformTimelineWidget(QWidget):
                 self._drag_start_x = x
                 self._drag_orig_start_ms = seg["start_time"]
                 self._drag_orig_end_ms = seg["end_time"]
+                self._drag_visual_start_ms = seg["start_time"]
+                self._drag_visual_end_ms = seg["end_time"]
             self.update()
         elif hit_type in ("left_edge", "right_edge"):
             self._selected_index = hit_idx
@@ -476,6 +485,8 @@ class WaveformTimelineWidget(QWidget):
                 self._drag_start_x = x
                 self._drag_orig_start_ms = seg["start_time"]
                 self._drag_orig_end_ms = seg["end_time"]
+                self._drag_visual_start_ms = seg["start_time"]
+                self._drag_visual_end_ms = seg["end_time"]
             self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -484,24 +495,23 @@ class WaveformTimelineWidget(QWidget):
 
         if self._drag_mode and self._drag_index >= 0:
             dx_ms = self.x_to_ms(float(x)) - self.x_to_ms(self._drag_start_x)
-            seg = self._get_subtitle_segment(self._drag_index)
-            if not seg:
-                return
 
             if self._drag_mode == "left_edge":
                 new_start = self._snap_to_grid(self._drag_orig_start_ms + dx_ms)
                 new_start = max(0, min(new_start, self._drag_orig_end_ms - SNAP_MS))
-                seg["start_time"] = new_start
+                self._drag_visual_start_ms = new_start
+                self._drag_visual_end_ms = self._drag_orig_end_ms
             elif self._drag_mode == "right_edge":
                 new_end = self._snap_to_grid(self._drag_orig_end_ms + dx_ms)
                 new_end = max(self._drag_orig_start_ms + SNAP_MS, min(new_end, self._duration_ms))
-                seg["end_time"] = new_end
+                self._drag_visual_start_ms = self._drag_orig_start_ms
+                self._drag_visual_end_ms = new_end
             elif self._drag_mode == "block_body":
                 duration = self._drag_orig_end_ms - self._drag_orig_start_ms
                 new_start = self._snap_to_grid(self._drag_orig_start_ms + dx_ms)
                 new_start = max(0, min(new_start, self._duration_ms - duration))
-                seg["start_time"] = new_start
-                seg["end_time"] = new_start + duration
+                self._drag_visual_start_ms = new_start
+                self._drag_visual_end_ms = new_start + duration
 
             self.update()
             return
@@ -517,11 +527,10 @@ class WaveformTimelineWidget(QWidget):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.LeftButton and self._drag_mode and self._drag_index >= 0:
-            seg = self._get_subtitle_segment(self._drag_index)
-            if seg:
-                self.subtitle_time_changed.emit(
-                    self._drag_index, seg["start_time"], seg["end_time"]
-                )
+            # 释放时才更新实际数据
+            self.subtitle_time_changed.emit(
+                self._drag_index, self._drag_visual_start_ms, self._drag_visual_end_ms
+            )
             self._drag_mode = ""
             self._drag_index = -1
         super().mouseReleaseEvent(event)
