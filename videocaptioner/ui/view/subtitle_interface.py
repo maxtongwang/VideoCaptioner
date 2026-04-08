@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
+import copy
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from PyQt5.QtCore import QAbstractTableModel, QModelIndex, Qt, QTime, pyqtSignal
+from PyQt5.QtCore import QAbstractTableModel, QModelIndex, Qt, QTime, QUrl, pyqtSignal
 from PyQt5.QtGui import QCloseEvent, QColor, QDragEnterEvent, QDropEvent, QKeyEvent
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -94,13 +96,13 @@ class SubtitleTableModel(QAbstractTableModel):
                 return (
                     QTime(0, 0)
                     .addMSecs(segment["start_time"])
-                    .toString("hh:mm:ss.zzz")[:-2]
+                    .toString("hh:mm:ss.zzz")[:-1]
                 )
             elif col == 1:
                 return (
                     QTime(0, 0)
                     .addMSecs(segment["end_time"])
-                    .toString("hh:mm:ss.zzz")[:-2]
+                    .toString("hh:mm:ss.zzz")[:-1]
                 )
             elif col == 2:
                 return segment["original_subtitle"]
@@ -123,7 +125,21 @@ class SubtitleTableModel(QAbstractTableModel):
             if not segment:
                 return False
 
-            if col == 2:
+            if col == 0:
+                ms = self._parse_timestamp_to_ms(value)
+                if ms is None:
+                    return False
+                if ms >= segment["end_time"]:
+                    return False
+                segment["start_time"] = ms
+            elif col == 1:
+                ms = self._parse_timestamp_to_ms(value)
+                if ms is None:
+                    return False
+                if ms <= segment["start_time"]:
+                    return False
+                segment["end_time"] = ms
+            elif col == 2:
                 old_value = segment["original_subtitle"]
                 segment["original_subtitle"] = value
                 if old_value != value and old_value.strip():
@@ -185,9 +201,23 @@ class SubtitleTableModel(QAbstractTableModel):
     def flags(self, index: QModelIndex) -> Qt.ItemFlags:
         if not index.isValid():
             return Qt.NoItemFlags  # type: ignore
-        if index.column() in [2, 3]:
+        if index.column() in [0, 1, 2, 3]:
             return Qt.ItemIsEditable | Qt.ItemIsEnabled | Qt.ItemIsSelectable  # type: ignore
         return Qt.ItemIsEnabled | Qt.ItemIsSelectable  # type: ignore
+
+    @staticmethod
+    def _parse_timestamp_to_ms(text: str) -> Optional[int]:
+        """Parse hh:mm:ss.zz timestamp string to milliseconds."""
+        match = re.match(r"^\d{2}:\d{2}:\d{2}\.\d{2}$", text)
+        if not match:
+            return None
+        parts = text.split(":")
+        h = int(parts[0])
+        m = int(parts[1])
+        s_parts = parts[2].split(".")
+        s = int(s_parts[0])
+        zz = int(s_parts[1])
+        return h * 3600000 + m * 60000 + s * 1000 + zz * 10
 
     def update_data(self, new_data: Dict[str, str]) -> None:
         """更新字幕数据"""
@@ -224,6 +254,7 @@ class SubtitleInterface(QWidget):
         self.task: Optional[SubtitleTask] = None
         self.subtitle_path: Optional[str] = None
         self.custom_prompt_text: str = cfg.custom_prompt_text.value
+        self._clipboard: List[dict] = []
         self.setAttribute(Qt.WA_DeleteOnClose)  # type: ignore
         self._init_ui()
         self._setup_signals()
@@ -347,7 +378,7 @@ class SubtitleInterface(QWidget):
         )
 
         # 添加视频播放按钮
-        # self.command_bar.addAction(Action(FIF.VIDEO, "", triggered=self.show_video_player))
+        self.command_bar.addAction(Action(FIF.VIDEO, "", triggered=self.show_video_player))
 
         # 添加打开文件夹按钮
         self.command_bar.addAction(
@@ -747,9 +778,8 @@ class SubtitleInterface(QWidget):
         self.model.layoutChanged.connect(signal_update)
 
         # 如果有关联的视频文件,则自动加载
-        # Note: SubtitleTask doesn't have file_path attribute
-        # if self.task and hasattr(self.task, "file_path") and self.task.file_path:
-        #     self.video_player.setVideo(QUrl.fromLocalFile(self.task.file_path))
+        if self.task and self.task.video_path and os.path.exists(self.task.video_path):
+            self.video_player.setVideo(QUrl.fromLocalFile(self.task.video_path))
 
         self.video_player.show()
         self.video_player.play()
@@ -763,6 +793,9 @@ class SubtitleInterface(QWidget):
             if item["end_time"] - 50 > start_time
             else item["end_time"]
         )
+        # Auto-open video player if not already visible
+        if not hasattr(self, "video_player") or not self.video_player.isVisible():
+            self.show_video_player()
         signalBus.play_video_segment(start_time, end_time)
 
     def show_context_menu(self, pos) -> None:
@@ -780,19 +813,43 @@ class SubtitleInterface(QWidget):
             return
 
         # 添加菜单项
+        insert_before_action = Action(FIF.ADD, self.tr("前方插入"))
+        insert_after_action = Action(FIF.ADD, self.tr("后方插入"))
+        split_action = Action(FIF.CUT, self.tr("拆分"))
         merge_action = Action(FIF.LINK, self.tr("合并"))
         delete_action = Action(FIF.DELETE, self.tr("删除"))
         retranslate_action = Action(FIF.SYNC, self.tr("重新翻译"))
+
+        menu.addAction(insert_before_action)
+        menu.addAction(insert_after_action)
+        menu.addAction(split_action)
+        menu.addSeparator()
         menu.addAction(merge_action)
         menu.addAction(delete_action)
         menu.addAction(retranslate_action)
+
+        insert_before_action.setShortcut("Ctrl+Shift+Return")
+        insert_after_action.setShortcut("Ctrl+Return")
+        split_action.setShortcut("Ctrl+Shift+S")
         merge_action.setShortcut("Ctrl+M")
         delete_action.setShortcut("Delete")
         retranslate_action.setShortcut("Ctrl+T")
 
+        is_single_row = len(rows) == 1
+        insert_before_action.setEnabled(is_single_row)
+        insert_after_action.setEnabled(is_single_row)
+        # Split enabled when single row with non-empty text
+        has_text = False
+        if is_single_row:
+            segment = list(self.model._data.values())[rows[0]]
+            has_text = bool(segment.get("original_subtitle", "").strip())
+        split_action.setEnabled(is_single_row and has_text)
         merge_action.setEnabled(len(rows) > 1)
         retranslate_action.setEnabled(cfg.need_translate.value and not self._is_processing())
 
+        insert_before_action.triggered.connect(lambda: self.insert_row(rows[0], "before"))
+        insert_after_action.triggered.connect(lambda: self.insert_row(rows[0], "after"))
+        split_action.triggered.connect(lambda: self.split_row(rows[0]))
         merge_action.triggered.connect(lambda: self.merge_selected_rows(rows))
         delete_action.triggered.connect(lambda: self.delete_selected_rows(rows))
         retranslate_action.triggered.connect(lambda: self.retranslate_selected_rows(rows))
@@ -882,6 +939,175 @@ class SubtitleInterface(QWidget):
         self.subtitle_table.clearSelection()
         self.model.update_all(new_data)
 
+    def insert_row(self, index: int, position: str) -> None:
+        """Insert a new subtitle row before or after the given index."""
+        data = self.model._data
+        data_list = list(data.values())
+
+        if position == "after":
+            insert_pos = index + 1
+        else:
+            insert_pos = index
+
+        # Interpolate timestamps from neighbors
+        if insert_pos > 0 and insert_pos < len(data_list):
+            prev_end = data_list[insert_pos - 1]["end_time"]
+            next_start = data_list[insert_pos]["start_time"]
+            start_time = prev_end
+            end_time = next_start
+        elif insert_pos == 0 and len(data_list) > 0:
+            start_time = max(0, data_list[0]["start_time"] - 1000)
+            end_time = data_list[0]["start_time"]
+        elif insert_pos >= len(data_list) and len(data_list) > 0:
+            start_time = data_list[-1]["end_time"]
+            end_time = start_time + 1000
+        else:
+            start_time = 0
+            end_time = 1000
+
+        # Ensure end > start
+        if end_time <= start_time:
+            end_time = start_time + 1000
+
+        new_segment = {
+            "start_time": start_time,
+            "end_time": end_time,
+            "original_subtitle": "",
+            "translated_subtitle": "",
+        }
+
+        # Rebuild data with new row inserted
+        new_data: Dict[str, Any] = {}
+        for i, item in enumerate(data_list):
+            if i == insert_pos:
+                new_data[str(len(new_data) + 1)] = new_segment
+            new_data[str(len(new_data) + 1)] = item
+        if insert_pos >= len(data_list):
+            new_data[str(len(new_data) + 1)] = new_segment
+
+        self.subtitle_table.clearSelection()
+        self.model.update_all(new_data)
+
+    def split_row(self, index: int) -> None:
+        """Split a subtitle row at the text midpoint with proportional time."""
+        data = self.model._data
+        data_list = list(data.values())
+
+        if index < 0 or index >= len(data_list):
+            return
+
+        segment = data_list[index]
+        original = segment.get("original_subtitle", "")
+        translated = segment.get("translated_subtitle", "")
+
+        if not original.strip():
+            return
+
+        # Split text at midpoint
+        orig_mid = len(original) // 2
+        orig_first = original[:orig_mid].rstrip()
+        orig_second = original[orig_mid:].lstrip()
+
+        # Split translated text at same ratio
+        if translated.strip():
+            trans_mid = len(translated) // 2
+            trans_first = translated[:trans_mid].rstrip()
+            trans_second = translated[trans_mid:].lstrip()
+        else:
+            trans_first = ""
+            trans_second = ""
+
+        # Split time proportionally
+        start = segment["start_time"]
+        end = segment["end_time"]
+        mid_time = (start + end) // 2
+
+        first_segment = {
+            "start_time": start,
+            "end_time": mid_time,
+            "original_subtitle": orig_first,
+            "translated_subtitle": trans_first,
+        }
+        second_segment = {
+            "start_time": mid_time,
+            "end_time": end,
+            "original_subtitle": orig_second,
+            "translated_subtitle": trans_second,
+        }
+
+        # Rebuild data with split row
+        new_data: Dict[str, Any] = {}
+        for i, item in enumerate(data_list):
+            if i == index:
+                new_data[str(len(new_data) + 1)] = first_segment
+                new_data[str(len(new_data) + 1)] = second_segment
+            else:
+                new_data[str(len(new_data) + 1)] = item
+
+        self.subtitle_table.clearSelection()
+        self.model.update_all(new_data)
+
+    def copy_selected_rows(self) -> None:
+        """Copy selected rows to internal clipboard (deep copy)."""
+        indexes = self.subtitle_table.selectedIndexes()
+        if not indexes:
+            return
+
+        rows = sorted(set(index.row() for index in indexes))
+        if not rows:
+            return
+
+        data_list = list(self.model._data.values())
+        self._clipboard = [copy.deepcopy(data_list[r]) for r in rows if r < len(data_list)]
+
+    def paste_rows(self) -> None:
+        """Paste clipboard rows after the selected row with shifted timestamps."""
+        if not self._clipboard:
+            return
+
+        data = self.model._data
+        data_list = list(data.values())
+
+        # Determine insertion point
+        indexes = self.subtitle_table.selectedIndexes()
+        if indexes:
+            rows = sorted(set(index.row() for index in indexes))
+            insert_after = rows[-1]
+        else:
+            # No selection: append at end
+            insert_after = len(data_list) - 1
+
+        # Calculate timestamp offset
+        if insert_after >= 0 and insert_after < len(data_list):
+            offset = data_list[insert_after]["end_time"] - self._clipboard[0]["start_time"]
+        else:
+            offset = 0
+
+        # Create shifted copies
+        pasted = []
+        for item in self._clipboard:
+            shifted = copy.deepcopy(item)
+            shifted["start_time"] += offset
+            shifted["end_time"] += offset
+            pasted.append(shifted)
+
+        # Rebuild data with pasted rows inserted
+        insert_pos = insert_after + 1
+        new_data: Dict[str, Any] = {}
+        for i, item in enumerate(data_list):
+            new_data[str(len(new_data) + 1)] = item
+            if i == insert_after:
+                for p in pasted:
+                    new_data[str(len(new_data) + 1)] = p
+        # If appending at end (insert_after == len-1), pasted rows already added above
+        # If data is empty, just add pasted rows
+        if not data_list:
+            for p in pasted:
+                new_data[str(len(new_data) + 1)] = p
+
+        self.subtitle_table.clearSelection()
+        self.model.update_all(new_data)
+
     def _is_processing(self) -> bool:
         """是否有任何处理任务正在运行"""
         if hasattr(self, "subtitle_optimization_thread") and self.subtitle_optimization_thread.isRunning():  # type: ignore
@@ -946,25 +1172,55 @@ class SubtitleInterface(QWidget):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """处理键盘事件"""
-        if event.modifiers() == Qt.ControlModifier and event.key() == Qt.Key_M:  # type: ignore
+        modifiers = event.modifiers()
+        key = event.key()
+
+        if modifiers == Qt.ControlModifier and key == Qt.Key_M:  # type: ignore
             indexes = self.subtitle_table.selectedIndexes()
             if indexes:
                 rows = sorted(set(index.row() for index in indexes))
                 if len(rows) > 1:
                     self.merge_selected_rows(rows)
             event.accept()
-        elif event.key() == Qt.Key_Delete:  # type: ignore
+        elif key == Qt.Key_Delete:  # type: ignore
             indexes = self.subtitle_table.selectedIndexes()
             if indexes:
                 rows = sorted(set(index.row() for index in indexes))
                 self.delete_selected_rows(rows)
             event.accept()
-        elif event.modifiers() == Qt.ControlModifier and event.key() == Qt.Key_T:  # type: ignore
+        elif modifiers == Qt.ControlModifier and key == Qt.Key_T:  # type: ignore
             if cfg.need_translate.value and not self._is_processing():
                 indexes = self.subtitle_table.selectedIndexes()
                 if indexes:
                     rows = sorted(set(index.row() for index in indexes))
                     self.retranslate_selected_rows(rows)
+            event.accept()
+        elif modifiers == (Qt.ControlModifier | Qt.ShiftModifier) and key == Qt.Key_Return:  # type: ignore
+            indexes = self.subtitle_table.selectedIndexes()
+            if indexes:
+                rows = sorted(set(index.row() for index in indexes))
+                if len(rows) == 1:
+                    self.insert_row(rows[0], "before")
+            event.accept()
+        elif modifiers == Qt.ControlModifier and key == Qt.Key_Return:  # type: ignore
+            indexes = self.subtitle_table.selectedIndexes()
+            if indexes:
+                rows = sorted(set(index.row() for index in indexes))
+                if len(rows) == 1:
+                    self.insert_row(rows[0], "after")
+            event.accept()
+        elif modifiers == (Qt.ControlModifier | Qt.ShiftModifier) and key == Qt.Key_S:  # type: ignore
+            indexes = self.subtitle_table.selectedIndexes()
+            if indexes:
+                rows = sorted(set(index.row() for index in indexes))
+                if len(rows) == 1:
+                    self.split_row(rows[0])
+            event.accept()
+        elif modifiers == Qt.ControlModifier and key == Qt.Key_C:  # type: ignore
+            self.copy_selected_rows()
+            event.accept()
+        elif modifiers == Qt.ControlModifier and key == Qt.Key_V:  # type: ignore
+            self.paste_rows()
             event.accept()
         else:
             super().keyPressEvent(event)
