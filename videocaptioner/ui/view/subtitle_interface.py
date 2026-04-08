@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from PyQt5.QtCore import QAbstractTableModel, QModelIndex, Qt, QTime, pyqtSignal
+from PyQt5.QtCore import QAbstractTableModel, QModelIndex, Qt, QTime, QUrl, pyqtSignal
 from PyQt5.QtGui import QCloseEvent, QColor, QDragEnterEvent, QDropEvent, QKeyEvent
 from PyQt5.QtWidgets import (
     QAbstractItemView,
@@ -378,7 +378,7 @@ class SubtitleInterface(QWidget):
         )
 
         # 添加视频播放按钮
-        # self.command_bar.addAction(Action(FIF.VIDEO, "", triggered=self.show_video_player))
+        self.command_bar.addAction(Action(FIF.VIDEO, "", triggered=self.show_video_player))
 
         # 添加打开文件夹按钮
         self.command_bar.addAction(
@@ -778,9 +778,8 @@ class SubtitleInterface(QWidget):
         self.model.layoutChanged.connect(signal_update)
 
         # 如果有关联的视频文件,则自动加载
-        # Note: SubtitleTask doesn't have file_path attribute
-        # if self.task and hasattr(self.task, "file_path") and self.task.file_path:
-        #     self.video_player.setVideo(QUrl.fromLocalFile(self.task.file_path))
+        if self.task and self.task.video_path and os.path.exists(self.task.video_path):
+            self.video_player.setVideo(QUrl.fromLocalFile(self.task.video_path))
 
         self.video_player.show()
         self.video_player.play()
@@ -794,6 +793,9 @@ class SubtitleInterface(QWidget):
             if item["end_time"] - 50 > start_time
             else item["end_time"]
         )
+        # Auto-open video player if not already visible
+        if not hasattr(self, "video_player") or not self.video_player.isVisible():
+            self.show_video_player()
         signalBus.play_video_segment(start_time, end_time)
 
     def show_context_menu(self, pos) -> None:
