@@ -29,6 +29,7 @@ class SignalBus(QObject):
     video_stop = pyqtSignal()  # 停止信号
     video_source_changed = pyqtSignal(QUrl)  # 视频源改变信号
     video_segment_play = pyqtSignal(int, int)  # 播放片段信号，参数为开始和结束时间(ms)
+    video_position_changed = pyqtSignal(int)  # 播放位置变化信号，参数为当前位置(ms)
     video_subtitle_added = pyqtSignal(str)  # 添加字幕文件信号
 
     # 新增视频控制相关方法
