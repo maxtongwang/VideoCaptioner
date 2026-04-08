@@ -53,6 +53,7 @@ LOG_PATH = APPDATA_PATH / "logs"
 LLM_LOG_FILE = LOG_PATH / "llm_requests.jsonl"
 SETTINGS_PATH = APPDATA_PATH / "settings.json"
 CACHE_PATH = APPDATA_PATH / "cache"
+LEARNING_PATH = APPDATA_PATH / "learning"
 MODEL_PATH = APPDATA_PATH / "models"
 
 FASTER_WHISPER_PATH = BIN_PATH / "Faster-Whisper-XXL"
@@ -70,5 +71,5 @@ if (BIN_PATH / "vlc").exists():
     os.environ["PYTHON_VLC_MODULE_PATH"] = str(BIN_PATH / "vlc")
 
 # Create data directories
-for p in [CACHE_PATH, LOG_PATH, WORK_PATH, MODEL_PATH]:
+for p in [CACHE_PATH, LOG_PATH, WORK_PATH, MODEL_PATH, LEARNING_PATH]:
     p.mkdir(parents=True, exist_ok=True)

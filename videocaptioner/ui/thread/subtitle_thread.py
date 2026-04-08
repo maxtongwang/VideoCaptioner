@@ -124,6 +124,13 @@ class SubtitleThread(QThread):
             if subtitle_config.need_split and not asr_data.is_word_timestamp():
                 asr_data.split_to_word_segments()
                 self.update_all.emit(asr_data.to_json())
+                try:
+                    from videocaptioner.core.learning import get_learning_engine
+                    get_learning_engine().save_session_snapshot(
+                        self.task.task_id, self.task.video_path or "", "post_word_split", asr_data.to_json()
+                    )
+                except Exception:
+                    pass
 
             # 验证 LLM 配置
             if self.need_llm(subtitle_config, asr_data):
@@ -143,6 +150,13 @@ class SubtitleThread(QThread):
                 )
                 asr_data = splitter.split_subtitle(asr_data)
                 self.update_all.emit(asr_data.to_json())
+                try:
+                    from videocaptioner.core.learning import get_learning_engine
+                    get_learning_engine().save_session_snapshot(
+                        self.task.task_id, self.task.video_path or "", "post_split", asr_data.to_json()
+                    )
+                except Exception:
+                    pass
 
             # 3. 优化字幕
             context_info = f'The subtitles below are from a file named "{task_file}". Use this context to improve accuracy if needed.\n'
@@ -166,6 +180,13 @@ class SubtitleThread(QThread):
                 asr_data = optimizer.optimize_subtitle(asr_data)
                 asr_data.remove_punctuation()
                 self.update_all.emit(asr_data.to_json())
+                try:
+                    from videocaptioner.core.learning import get_learning_engine
+                    get_learning_engine().save_session_snapshot(
+                        self.task.task_id, self.task.video_path or "", "post_optimize", asr_data.to_json()
+                    )
+                except Exception:
+                    pass
 
             # 4. 翻译字幕
             if subtitle_config.need_translate:
@@ -186,6 +207,13 @@ class SubtitleThread(QThread):
                 # 移除末尾标点符号
                 asr_data.remove_punctuation()
                 self.update_all.emit(asr_data.to_json())
+                try:
+                    from videocaptioner.core.learning import get_learning_engine
+                    get_learning_engine().save_session_snapshot(
+                        self.task.task_id, self.task.video_path or "", "post_translate", asr_data.to_json()
+                    )
+                except Exception:
+                    pass
 
                 # 保存翻译结果(单语、双语)
                 if self.task.need_next_task and self.task.video_path:

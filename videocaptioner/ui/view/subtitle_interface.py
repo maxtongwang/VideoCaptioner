@@ -62,6 +62,9 @@ class SubtitleTableModel(QAbstractTableModel):
     def __init__(self, data: Union[str, Dict[str, Any]] = ""):
         super().__init__()
         self._data: Dict[str, Any] = {}
+        self._source_video: str = ""
+        self._subtitle_sources: Dict[str, str] = {}
+        self._current_stage: str = "llm_optimize"
         if isinstance(data, str):
             self.load_data(data)
         else:
@@ -121,9 +124,27 @@ class SubtitleTableModel(QAbstractTableModel):
                 return False
 
             if col == 2:
+                old_value = segment["original_subtitle"]
                 segment["original_subtitle"] = value
+                if old_value != value and old_value.strip():
+                    try:
+                        from videocaptioner.core.learning import get_learning_engine
+                        source = self._subtitle_sources.get(str(row + 1), "llm_optimize")
+                        get_learning_engine().record_edit(old_value, value, source_video=self._source_video, source=source)
+                        self._subtitle_sources[str(row + 1)] = "human"
+                    except Exception:
+                        pass
             elif col == 3:
+                old_value = segment["translated_subtitle"]
                 segment["translated_subtitle"] = value
+                if old_value != value and old_value.strip():
+                    try:
+                        from videocaptioner.core.learning import get_learning_engine
+                        source = self._subtitle_sources.get(str(row + 1), "llm_optimize")
+                        get_learning_engine().record_edit(old_value, value, source_video=self._source_video, source=source)
+                        self._subtitle_sources[str(row + 1)] = "human"
+                    except Exception:
+                        pass
             else:
                 return False
 
@@ -190,6 +211,7 @@ class SubtitleTableModel(QAbstractTableModel):
     def update_all(self, data: Dict[str, Any]) -> None:
         """更新所有数据"""
         self._data = data
+        self._subtitle_sources = {k: self._current_stage for k in data.keys()}
         self.layoutChanged.emit()
 
 
@@ -434,6 +456,7 @@ class SubtitleInterface(QWidget):
         self.start_button.setEnabled(True)
         self.task = task
         self.subtitle_path = task.subtitle_path
+        self.model._source_video = task.video_path or ""
         self.update_info(task)
 
     def update_info(self, task: SubtitleTask) -> None:
@@ -471,6 +494,8 @@ class SubtitleInterface(QWidget):
             self.start_button.setEnabled(True)
             self.cancel_button.hide()
             return
+        self.model._current_stage = "asr"
+        self.model._source_video = self.task.video_path or ""
         self.subtitle_optimization_thread = SubtitleThread(self.task)
         self.subtitle_optimization_thread.finished.connect(
             self.on_subtitle_optimization_finished
@@ -529,6 +554,13 @@ class SubtitleInterface(QWidget):
     def on_subtitle_optimization_progress(self, value: int, status: str) -> None:
         self.progress_bar.setValue(value)
         self.status_label.setText(status)
+        # Track current processing stage for learning engine source tagging
+        if "断句" in status:
+            self.model._current_stage = "llm_split"
+        elif "优化" in status:
+            self.model._current_stage = "llm_optimize"
+        elif "翻译" in status:
+            self.model._current_stage = "translate"
 
     def update_data(self, data):
         self.model.update_data(data)
