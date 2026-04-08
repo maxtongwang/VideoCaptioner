@@ -166,6 +166,7 @@ class MediaPlayer(MediaPlayerBase):
             if position != self._last_position:
                 self._last_position = position
                 self.positionChanged.emit(position)
+                signalBus.video_position_changed.emit(position)
 
             # 更新时长
             duration = self._player.get_length()
