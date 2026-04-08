@@ -5,6 +5,7 @@
 
 import json
 import re
+import threading
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -32,6 +33,7 @@ class StyleRuleEngine:
             path: 规则文件路径，默认使用 LEARNING_PATH / "style_rules.json"
         """
         self._path = path or (LEARNING_PATH / "style_rules.json")
+        self._lock = threading.Lock()
         self._rules: list[dict] = []
         self._prompt_directives: list[str] = []
         self._load()
