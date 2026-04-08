@@ -254,6 +254,7 @@ class SubtitleInterface(QWidget):
         self.task: Optional[SubtitleTask] = None
         self.subtitle_path: Optional[str] = None
         self.custom_prompt_text: str = cfg.custom_prompt_text.value
+        self._clipboard: List[dict] = []
         self.setAttribute(Qt.WA_DeleteOnClose)  # type: ignore
         self._init_ui()
         self._setup_signals()
@@ -810,19 +811,43 @@ class SubtitleInterface(QWidget):
             return
 
         # 添加菜单项
+        insert_before_action = Action(FIF.ADD, self.tr("前方插入"))
+        insert_after_action = Action(FIF.ADD, self.tr("后方插入"))
+        split_action = Action(FIF.CUT, self.tr("拆分"))
         merge_action = Action(FIF.LINK, self.tr("合并"))
         delete_action = Action(FIF.DELETE, self.tr("删除"))
         retranslate_action = Action(FIF.SYNC, self.tr("重新翻译"))
+
+        menu.addAction(insert_before_action)
+        menu.addAction(insert_after_action)
+        menu.addAction(split_action)
+        menu.addSeparator()
         menu.addAction(merge_action)
         menu.addAction(delete_action)
         menu.addAction(retranslate_action)
+
+        insert_before_action.setShortcut("Ctrl+Shift+Return")
+        insert_after_action.setShortcut("Ctrl+Return")
+        split_action.setShortcut("Ctrl+Shift+S")
         merge_action.setShortcut("Ctrl+M")
         delete_action.setShortcut("Delete")
         retranslate_action.setShortcut("Ctrl+T")
 
+        is_single_row = len(rows) == 1
+        insert_before_action.setEnabled(is_single_row)
+        insert_after_action.setEnabled(is_single_row)
+        # Split enabled when single row with non-empty text
+        has_text = False
+        if is_single_row:
+            segment = list(self.model._data.values())[rows[0]]
+            has_text = bool(segment.get("original_subtitle", "").strip())
+        split_action.setEnabled(is_single_row and has_text)
         merge_action.setEnabled(len(rows) > 1)
         retranslate_action.setEnabled(cfg.need_translate.value and not self._is_processing())
 
+        insert_before_action.triggered.connect(lambda: self.insert_row(rows[0], "before"))
+        insert_after_action.triggered.connect(lambda: self.insert_row(rows[0], "after"))
+        split_action.triggered.connect(lambda: self.split_row(rows[0]))
         merge_action.triggered.connect(lambda: self.merge_selected_rows(rows))
         delete_action.triggered.connect(lambda: self.delete_selected_rows(rows))
         retranslate_action.triggered.connect(lambda: self.retranslate_selected_rows(rows))
@@ -912,6 +937,55 @@ class SubtitleInterface(QWidget):
         self.subtitle_table.clearSelection()
         self.model.update_all(new_data)
 
+    def insert_row(self, index: int, position: str) -> None:
+        """Insert a new subtitle row before or after the given index."""
+        data = self.model._data
+        data_list = list(data.values())
+
+        if position == "after":
+            insert_pos = index + 1
+        else:
+            insert_pos = index
+
+        # Interpolate timestamps from neighbors
+        if insert_pos > 0 and insert_pos < len(data_list):
+            prev_end = data_list[insert_pos - 1]["end_time"]
+            next_start = data_list[insert_pos]["start_time"]
+            start_time = prev_end
+            end_time = next_start
+        elif insert_pos == 0 and len(data_list) > 0:
+            start_time = max(0, data_list[0]["start_time"] - 1000)
+            end_time = data_list[0]["start_time"]
+        elif insert_pos >= len(data_list) and len(data_list) > 0:
+            start_time = data_list[-1]["end_time"]
+            end_time = start_time + 1000
+        else:
+            start_time = 0
+            end_time = 1000
+
+        # Ensure end > start
+        if end_time <= start_time:
+            end_time = start_time + 1000
+
+        new_segment = {
+            "start_time": start_time,
+            "end_time": end_time,
+            "original_subtitle": "",
+            "translated_subtitle": "",
+        }
+
+        # Rebuild data with new row inserted
+        new_data: Dict[str, Any] = {}
+        for i, item in enumerate(data_list):
+            if i == insert_pos:
+                new_data[str(len(new_data) + 1)] = new_segment
+            new_data[str(len(new_data) + 1)] = item
+        if insert_pos >= len(data_list):
+            new_data[str(len(new_data) + 1)] = new_segment
+
+        self.subtitle_table.clearSelection()
+        self.model.update_all(new_data)
+
     def _is_processing(self) -> bool:
         """是否有任何处理任务正在运行"""
         if hasattr(self, "subtitle_optimization_thread") and self.subtitle_optimization_thread.isRunning():  # type: ignore
@@ -976,25 +1050,55 @@ class SubtitleInterface(QWidget):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """处理键盘事件"""
-        if event.modifiers() == Qt.ControlModifier and event.key() == Qt.Key_M:  # type: ignore
+        modifiers = event.modifiers()
+        key = event.key()
+
+        if modifiers == Qt.ControlModifier and key == Qt.Key_M:  # type: ignore
             indexes = self.subtitle_table.selectedIndexes()
             if indexes:
                 rows = sorted(set(index.row() for index in indexes))
                 if len(rows) > 1:
                     self.merge_selected_rows(rows)
             event.accept()
-        elif event.key() == Qt.Key_Delete:  # type: ignore
+        elif key == Qt.Key_Delete:  # type: ignore
             indexes = self.subtitle_table.selectedIndexes()
             if indexes:
                 rows = sorted(set(index.row() for index in indexes))
                 self.delete_selected_rows(rows)
             event.accept()
-        elif event.modifiers() == Qt.ControlModifier and event.key() == Qt.Key_T:  # type: ignore
+        elif modifiers == Qt.ControlModifier and key == Qt.Key_T:  # type: ignore
             if cfg.need_translate.value and not self._is_processing():
                 indexes = self.subtitle_table.selectedIndexes()
                 if indexes:
                     rows = sorted(set(index.row() for index in indexes))
                     self.retranslate_selected_rows(rows)
+            event.accept()
+        elif modifiers == (Qt.ControlModifier | Qt.ShiftModifier) and key == Qt.Key_Return:  # type: ignore
+            indexes = self.subtitle_table.selectedIndexes()
+            if indexes:
+                rows = sorted(set(index.row() for index in indexes))
+                if len(rows) == 1:
+                    self.insert_row(rows[0], "before")
+            event.accept()
+        elif modifiers == Qt.ControlModifier and key == Qt.Key_Return:  # type: ignore
+            indexes = self.subtitle_table.selectedIndexes()
+            if indexes:
+                rows = sorted(set(index.row() for index in indexes))
+                if len(rows) == 1:
+                    self.insert_row(rows[0], "after")
+            event.accept()
+        elif modifiers == (Qt.ControlModifier | Qt.ShiftModifier) and key == Qt.Key_S:  # type: ignore
+            indexes = self.subtitle_table.selectedIndexes()
+            if indexes:
+                rows = sorted(set(index.row() for index in indexes))
+                if len(rows) == 1:
+                    self.split_row(rows[0])
+            event.accept()
+        elif modifiers == Qt.ControlModifier and key == Qt.Key_C:  # type: ignore
+            self.copy_selected_rows()
+            event.accept()
+        elif modifiers == Qt.ControlModifier and key == Qt.Key_V:  # type: ignore
+            self.paste_rows()
             event.accept()
         else:
             super().keyPressEvent(event)
