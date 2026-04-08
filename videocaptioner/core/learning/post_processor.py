@@ -45,7 +45,7 @@ def _case_preserving_replace(text: str, old: str, new: str) -> str:
             return new[0].upper() + new[1:] if len(new) > 1 else new.upper()
         return new
 
-    pattern = re.compile(re.escape(old), re.IGNORECASE)
+    pattern = re.compile(r"\b" + re.escape(old) + r"\b", re.IGNORECASE)
     return pattern.sub(_match_case, text)
 
 

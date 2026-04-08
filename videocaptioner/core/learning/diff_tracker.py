@@ -107,15 +107,41 @@ class DiffTracker:
                 if correction:
                     corrections.append(correction)
             elif tag == "delete":
-                # 删除操作 — 仅跟踪非空白/非标点删除
+                # 删除操作 — 扩展到词边界以捕获完整单词
                 if not old_text.strip() or _is_punctuation_only(old_text):
                     continue
-                corrections.append((old_text, ""))
+                is_cjk = any(_is_cjk_char(ch) for ch in old_text)
+                if is_cjk:
+                    ei1, ei2 = _expand_cjk_group(original, i1, i2)
+                else:
+                    ei1, ei2 = _expand_to_word_boundary(original, i1, i2)
+                expanded_old = original[ei1:ei2].strip()
+                # 在编辑文本中找到对应位置的词
+                if is_cjk:
+                    ej1, ej2 = _expand_cjk_group(edited, j1, j1)
+                else:
+                    ej1, ej2 = _expand_to_word_boundary(edited, j1, j1)
+                expanded_new = edited[ej1:ej2].strip()
+                if expanded_old and expanded_old != expanded_new:
+                    corrections.append((expanded_old, expanded_new))
             elif tag == "insert":
-                # 插入操作 — 仅跟踪非空白/非标点插入
+                # 插入操作 — 扩展到词边界以捕获完整单词
                 if not new_text.strip() or _is_punctuation_only(new_text):
                     continue
-                corrections.append(("", new_text))
+                is_cjk = any(_is_cjk_char(ch) for ch in new_text)
+                if is_cjk:
+                    ej1, ej2 = _expand_cjk_group(edited, j1, j2)
+                else:
+                    ej1, ej2 = _expand_to_word_boundary(edited, j1, j2)
+                expanded_new = edited[ej1:ej2].strip()
+                # 在原始文本中找到对应位置的词
+                if is_cjk:
+                    ei1, ei2 = _expand_cjk_group(original, i1, i1)
+                else:
+                    ei1, ei2 = _expand_to_word_boundary(original, i1, i1)
+                expanded_old = original[ei1:ei2].strip()
+                if expanded_new and expanded_old != expanded_new:
+                    corrections.append((expanded_old, expanded_new))
 
         return self._filter_corrections(corrections)
 
