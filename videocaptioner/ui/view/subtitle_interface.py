@@ -1045,6 +1045,67 @@ class SubtitleInterface(QWidget):
         self.subtitle_table.clearSelection()
         self.model.update_all(new_data)
 
+    def copy_selected_rows(self) -> None:
+        """Copy selected rows to internal clipboard (deep copy)."""
+        indexes = self.subtitle_table.selectedIndexes()
+        if not indexes:
+            return
+
+        rows = sorted(set(index.row() for index in indexes))
+        if not rows:
+            return
+
+        data_list = list(self.model._data.values())
+        self._clipboard = [copy.deepcopy(data_list[r]) for r in rows if r < len(data_list)]
+
+    def paste_rows(self) -> None:
+        """Paste clipboard rows after the selected row with shifted timestamps."""
+        if not self._clipboard:
+            return
+
+        data = self.model._data
+        data_list = list(data.values())
+
+        # Determine insertion point
+        indexes = self.subtitle_table.selectedIndexes()
+        if indexes:
+            rows = sorted(set(index.row() for index in indexes))
+            insert_after = rows[-1]
+        else:
+            # No selection: append at end
+            insert_after = len(data_list) - 1
+
+        # Calculate timestamp offset
+        if insert_after >= 0 and insert_after < len(data_list):
+            offset = data_list[insert_after]["end_time"] - self._clipboard[0]["start_time"]
+        else:
+            offset = 0
+
+        # Create shifted copies
+        pasted = []
+        for item in self._clipboard:
+            shifted = copy.deepcopy(item)
+            shifted["start_time"] += offset
+            shifted["end_time"] += offset
+            pasted.append(shifted)
+
+        # Rebuild data with pasted rows inserted
+        insert_pos = insert_after + 1
+        new_data: Dict[str, Any] = {}
+        for i, item in enumerate(data_list):
+            new_data[str(len(new_data) + 1)] = item
+            if i == insert_after:
+                for p in pasted:
+                    new_data[str(len(new_data) + 1)] = p
+        # If appending at end (insert_after == len-1), pasted rows already added above
+        # If data is empty, just add pasted rows
+        if not data_list:
+            for p in pasted:
+                new_data[str(len(new_data) + 1)] = p
+
+        self.subtitle_table.clearSelection()
+        self.model.update_all(new_data)
+
     def _is_processing(self) -> bool:
         """是否有任何处理任务正在运行"""
         if hasattr(self, "subtitle_optimization_thread") and self.subtitle_optimization_thread.isRunning():  # type: ignore
