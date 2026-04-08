@@ -56,6 +56,7 @@ from videocaptioner.core.utils.platform_utils import open_folder, reveal_in_expl
 from videocaptioner.ui.common.config import cfg
 from videocaptioner.ui.common.signal_bus import signalBus
 from videocaptioner.ui.components.SubtitleSettingDialog import SubtitleSettingDialog
+from videocaptioner.ui.components.waveform_panel import WaveformPanel
 from videocaptioner.ui.task_factory import TaskFactory
 from videocaptioner.ui.thread.subtitle_thread import RetranslateThread, SubtitleThread
 
@@ -268,6 +269,7 @@ class SubtitleInterface(QWidget):
 
         self._setup_top_layout()
         self._setup_subtitle_table()
+        self._setup_waveform_panel()
         self._setup_bottom_layout()
 
     def set_values(self):
@@ -436,6 +438,12 @@ class SubtitleInterface(QWidget):
         self.subtitle_table.customContextMenuRequested.connect(self.show_context_menu)
         self.main_layout.addWidget(self.subtitle_table)
 
+    def _setup_waveform_panel(self) -> None:
+        """创建波形面板并添加到布局。"""
+        self.waveform_panel = WaveformPanel(self)
+        self.waveform_panel.setFixedHeight(180)
+        self.main_layout.addWidget(self.waveform_panel)
+
     def _setup_bottom_layout(self):
         self.bottom_layout = QHBoxLayout()
         self.progress_bar = ProgressBar(self)
@@ -462,8 +470,28 @@ class SubtitleInterface(QWidget):
         signalBus.subtitle_translation_changed.connect(
             self.on_subtitle_translation_changed
         )
-        # self.subtitle_setting_button.clicked.connect(self.show_subtitle_settings)
-        # self.video_player_button.clicked.connect(self.show_video_player)
+
+        # 波形面板信号
+        signalBus.video_position_changed.connect(self.waveform_panel.set_playback_position)
+        self.waveform_panel.seek_requested.connect(
+            lambda ms: signalBus.play_video_segment(ms, ms + 100)
+        )
+        self.waveform_panel.subtitle_selected.connect(self._on_waveform_subtitle_selected)
+        self.waveform_panel.subtitle_time_changed.connect(self._on_waveform_time_changed)
+        self.waveform_panel.subtitle_add_requested.connect(self._on_waveform_add_subtitle)
+        self.waveform_panel.subtitle_delete_requested.connect(self._on_waveform_delete_subtitle)
+        self.waveform_panel.subtitle_split_requested.connect(self._on_waveform_split_subtitle)
+        self.waveform_panel.subtitle_copy_requested.connect(self._on_waveform_copy_subtitle)
+        self.waveform_panel.subtitle_paste_requested.connect(self._on_waveform_paste_subtitle)
+        self.waveform_panel.subtitle_edit_requested.connect(self._on_waveform_edit_subtitle)
+
+        # 模型数据变化同步到波形面板
+        self.model.dataChanged.connect(
+            lambda: self.waveform_panel.set_subtitle_data(self.model._data)
+        )
+        self.model.layoutChanged.connect(
+            lambda: self.waveform_panel.set_subtitle_data(self.model._data)
+        )
 
     def show_prompt_dialog(self) -> None:
         dialog = PromptDialog(self)
@@ -489,6 +517,9 @@ class SubtitleInterface(QWidget):
         self.subtitle_path = task.subtitle_path
         self.model._source_video = task.video_path or ""
         self.update_info(task)
+        # 加载波形
+        if task.video_path and os.path.isfile(task.video_path):
+            self.waveform_panel.load_video(task.video_path)
 
     def update_info(self, task: SubtitleTask) -> None:
         """更新页面信息"""
@@ -498,6 +529,7 @@ class SubtitleInterface(QWidget):
         asr_data = ASRData.from_subtitle_file(str(original_subtitle_save_path))
         self.model._data = asr_data.to_json()
         self.model.layoutChanged.emit()
+        self.waveform_panel.set_subtitle_data(self.model._data)
         self.status_label.setText(self.tr("已加载文件"))
 
     def start_subtitle_optimization(self, need_create_task: bool = True) -> None:
@@ -598,6 +630,7 @@ class SubtitleInterface(QWidget):
 
     def update_all(self, data):
         self.model.update_all(data)
+        self.waveform_panel.set_subtitle_data(self.model._data)
 
     def remove_widget(self) -> None:
         """隐藏顶部开始按钮和底部进度条"""
@@ -797,6 +830,105 @@ class SubtitleInterface(QWidget):
         if not hasattr(self, "video_player") or not self.video_player.isVisible():
             self.show_video_player()
         signalBus.play_video_segment(start_time, end_time)
+        self.waveform_panel.waveform_widget.set_selected_index(row)
+
+    # ── 波形面板事件处理 ──
+
+    def _on_waveform_subtitle_selected(self, index: int) -> None:
+        """波形面板选中字幕块 -> 同步到表格。"""
+        if 0 <= index < self.model.rowCount():
+            self.subtitle_table.selectRow(index)
+            self.subtitle_table.scrollTo(self.model.index(index, 0))
+
+    def _on_waveform_time_changed(self, index: int, start_ms: int, end_ms: int) -> None:
+        """波形面板拖拽修改字幕时间。"""
+        key = str(index + 1)
+        if key in self.model._data:
+            self.model._data[key]["start_time"] = start_ms
+            self.model._data[key]["end_time"] = end_ms
+            top_left = self.model.index(index, 0)
+            bottom_right = self.model.index(index, 1)
+            self.model.dataChanged.emit(top_left, bottom_right, [Qt.DisplayRole, Qt.EditRole])
+
+    def _on_waveform_add_subtitle(self, position_ms: int) -> None:
+        """波形面板添加字幕。"""
+        data_list = list(self.model._data.values())
+
+        # 按时间找到插入位置
+        insert_pos = len(data_list)
+        for i, seg in enumerate(data_list):
+            if seg["start_time"] > position_ms:
+                insert_pos = i
+                break
+
+        new_segment = {
+            "start_time": position_ms,
+            "end_time": position_ms + 2000,
+            "original_subtitle": "",
+            "translated_subtitle": "",
+        }
+
+        new_data: Dict[str, Any] = {}
+        for i, item in enumerate(data_list):
+            if i == insert_pos:
+                new_data[str(len(new_data) + 1)] = new_segment
+            new_data[str(len(new_data) + 1)] = item
+        if insert_pos >= len(data_list):
+            new_data[str(len(new_data) + 1)] = new_segment
+
+        self.model.update_all(new_data)
+
+    def _on_waveform_delete_subtitle(self, index: int) -> None:
+        """波形面板删除字幕。"""
+        self.delete_selected_rows([index])
+
+    def _on_waveform_split_subtitle(self, index: int) -> None:
+        """波形面板拆分字幕。"""
+        self.split_row(index)
+
+    def _on_waveform_copy_subtitle(self, index: int) -> None:
+        """波形面板复制字幕。"""
+        self.subtitle_table.selectRow(index)
+        self.copy_selected_rows()
+
+    def _on_waveform_paste_subtitle(self, position_ms: int) -> None:
+        """波形面板粘贴字幕到指定位置。"""
+        if not self._clipboard:
+            return
+
+        data_list = list(self.model._data.values())
+        offset = position_ms - self._clipboard[0]["start_time"]
+
+        pasted = []
+        for item in self._clipboard:
+            shifted = copy.deepcopy(item)
+            shifted["start_time"] += offset
+            shifted["end_time"] += offset
+            pasted.append(shifted)
+
+        # 按时间找到插入位置
+        insert_pos = len(data_list)
+        for i, seg in enumerate(data_list):
+            if seg["start_time"] > position_ms:
+                insert_pos = i
+                break
+
+        new_data: Dict[str, Any] = {}
+        for i, item in enumerate(data_list):
+            if i == insert_pos:
+                for p in pasted:
+                    new_data[str(len(new_data) + 1)] = p
+            new_data[str(len(new_data) + 1)] = item
+        if insert_pos >= len(data_list):
+            for p in pasted:
+                new_data[str(len(new_data) + 1)] = p
+
+        self.model.update_all(new_data)
+
+    def _on_waveform_edit_subtitle(self, index: int) -> None:
+        """波形面板双击编辑字幕。"""
+        if 0 <= index < self.model.rowCount():
+            self.subtitle_table.edit(self.model.index(index, 2))
 
     def show_context_menu(self, pos) -> None:
         """显示右键菜单"""
