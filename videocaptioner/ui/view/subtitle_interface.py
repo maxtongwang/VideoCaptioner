@@ -986,6 +986,65 @@ class SubtitleInterface(QWidget):
         self.subtitle_table.clearSelection()
         self.model.update_all(new_data)
 
+    def split_row(self, index: int) -> None:
+        """Split a subtitle row at the text midpoint with proportional time."""
+        data = self.model._data
+        data_list = list(data.values())
+
+        if index < 0 or index >= len(data_list):
+            return
+
+        segment = data_list[index]
+        original = segment.get("original_subtitle", "")
+        translated = segment.get("translated_subtitle", "")
+
+        if not original.strip():
+            return
+
+        # Split text at midpoint
+        orig_mid = len(original) // 2
+        orig_first = original[:orig_mid].rstrip()
+        orig_second = original[orig_mid:].lstrip()
+
+        # Split translated text at same ratio
+        if translated.strip():
+            trans_mid = len(translated) // 2
+            trans_first = translated[:trans_mid].rstrip()
+            trans_second = translated[trans_mid:].lstrip()
+        else:
+            trans_first = ""
+            trans_second = ""
+
+        # Split time proportionally
+        start = segment["start_time"]
+        end = segment["end_time"]
+        mid_time = (start + end) // 2
+
+        first_segment = {
+            "start_time": start,
+            "end_time": mid_time,
+            "original_subtitle": orig_first,
+            "translated_subtitle": trans_first,
+        }
+        second_segment = {
+            "start_time": mid_time,
+            "end_time": end,
+            "original_subtitle": orig_second,
+            "translated_subtitle": trans_second,
+        }
+
+        # Rebuild data with split row
+        new_data: Dict[str, Any] = {}
+        for i, item in enumerate(data_list):
+            if i == index:
+                new_data[str(len(new_data) + 1)] = first_segment
+                new_data[str(len(new_data) + 1)] = second_segment
+            else:
+                new_data[str(len(new_data) + 1)] = item
+
+        self.subtitle_table.clearSelection()
+        self.model.update_all(new_data)
+
     def _is_processing(self) -> bool:
         """是否有任何处理任务正在运行"""
         if hasattr(self, "subtitle_optimization_thread") and self.subtitle_optimization_thread.isRunning():  # type: ignore
